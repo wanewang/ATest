@@ -55,30 +55,31 @@ final class MatchListViewModelTests: XCTestCase {
             MatchOdds(matchID: targetID, teamAOdds: 3.21, teamBOdds: 1.89)
         ])
 
-        waitUntil("odds update should be applied") {
-            viewModel.match(for: targetID)?.odds.teamAOdds == 3.21
+        waitUntil("odds update should be emitted") {
+            emittedIDs.contains(targetID)
         }
-        XCTAssertTrue(emittedIDs.contains(targetID))
+        XCTAssertEqual(viewModel.match(for: targetID)?.odds.teamAOdds, 3.21)
     }
 
     @MainActor
     func testRetryCancelsPreviousFetchResult() {
         let provider = MockMatchDataProvider()
-        let firstFetch = PassthroughSubject<[MatchWithOdds], Error>()
         let retryFetch = PassthroughSubject<[MatchWithOdds], Error>()
-        let staleData = Self.makeMatches(count: 1, idStart: 1_000)
         let freshData = Self.makeMatches(count: 1, idStart: 2_000)
 
-        provider.fetchHandler = { reset in
-            if reset {
-                return retryFetch.eraseToAnyPublisher()
-            }
-            return firstFetch.eraseToAnyPublisher()
+        provider.fetchHandler = { _ in
+            retryFetch.eraseToAnyPublisher()
         }
 
         let viewModel = MatchListViewModel(dataProvider: provider)
         viewModel.loadNextPage()
         viewModel.retry()
+
+        // Retry cancels the initial storage subscription before it fires,
+        // so only the retry's fetchMatchesWithOdds(reset: true) is called.
+        waitUntil("retry fetch should be registered") {
+            provider.fetchCalls.count == 1
+        }
 
         retryFetch.send(freshData)
         retryFetch.send(completion: .finished)
@@ -86,13 +87,59 @@ final class MatchListViewModelTests: XCTestCase {
         waitUntil("retry fetch should win") {
             viewModel.displayedMatchIDs == [freshData[0].match.matchID]
         }
+        XCTAssertEqual(provider.fetchCalls, [true])
+    }
 
-        firstFetch.send(staleData)
-        firstFetch.send(completion: .finished)
+    @MainActor
+    func testFetchFromStorageReturnsNilFallsBackToNetwork() {
+        let provider = MockMatchDataProvider()
+        provider.storageResult = nil
 
-        waitForMainQueue()
-        XCTAssertEqual(viewModel.displayedMatchIDs, [freshData[0].match.matchID])
-        XCTAssertEqual(provider.fetchCalls, [false, true])
+        let networkData = Self.makeMatches(count: 3)
+        provider.fetchHandler = { _ in
+            Just(networkData)
+                .setFailureType(to: Error.self)
+                .eraseToAnyPublisher()
+        }
+
+        let viewModel = MatchListViewModel(dataProvider: provider)
+        viewModel.loadNextPage()
+
+        waitUntil("network data should be loaded") {
+            viewModel.displayedMatchIDs.count == 3
+        }
+        XCTAssertEqual(provider.fetchCalls, [false])
+    }
+
+    @MainActor
+    func testFetchFromStorageReturnsCachedThenRefreshesFromNetwork() {
+        let provider = MockMatchDataProvider()
+        let cachedData = Self.makeMatches(count: 2, idStart: 500)
+        provider.storageResult = cachedData
+
+        let networkSubject = PassthroughSubject<[MatchWithOdds], Error>()
+        let networkData = Self.makeMatches(count: 5, idStart: 500)
+        provider.fetchHandler = { _ in
+            networkSubject.eraseToAnyPublisher()
+        }
+
+        let viewModel = MatchListViewModel(dataProvider: provider)
+        viewModel.loadNextPage()
+
+        // Cached data should appear first
+        waitUntil("cached data should be displayed") {
+            viewModel.displayedMatchIDs.count == 2
+        }
+
+        // Send network data after cached is displayed
+        networkSubject.send(networkData)
+        networkSubject.send(completion: .finished)
+
+        // Network refresh replaces with fresh data
+        waitUntil("network refresh should replace data") {
+            viewModel.displayedMatchIDs.count == 5
+        }
+        XCTAssertEqual(provider.fetchCalls, [false])
     }
 
     // MARK: - Helpers
@@ -137,6 +184,7 @@ final class MatchListViewModelTests: XCTestCase {
 }
 
 private final class MockMatchDataProvider: MatchDataProviding {
+
     let oddsSubject = PassthroughSubject<[MatchOdds], Never>()
     var oddsStream: AnyPublisher<[MatchOdds], Never> {
         oddsSubject.eraseToAnyPublisher()
@@ -147,6 +195,11 @@ private final class MockMatchDataProvider: MatchDataProviding {
     var disconnectCallCount = 0
     var savedSnapshots: [[MatchWithOdds]] = []
     var fetchHandler: ((Bool) -> AnyPublisher<[MatchWithOdds], Error>)?
+    var storageResult: [MatchWithOdds]? = nil
+
+    func fetchMatchesFromStorage() -> AnyPublisher<[MatchWithOdds]?, Never> {
+        Just(storageResult).eraseToAnyPublisher()
+    }
 
     func fetchMatchesWithOdds(reset: Bool) -> AnyPublisher<[MatchWithOdds], Error> {
         fetchCalls.append(reset)

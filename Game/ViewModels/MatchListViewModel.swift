@@ -60,9 +60,7 @@ final class MatchListViewModel: ObservableObject {
             guard self.hasMorePages else { return }
 
             if self.allMatches.isEmpty {
-                DispatchQueue.main.async {
-                    self.fetchAll()
-                }
+                self.fetchAll()
             } else {
                 let ids = self.computeNextPage()
                 DispatchQueue.main.async {
@@ -80,8 +78,8 @@ final class MatchListViewModel: ObservableObject {
             self.matchDataMap = [:]
             self.currentPage = 0
             self.hasMorePages = true
+            fetchAll(reset: true)
         }
-        fetchAll(reset: true)
     }
 
     /// Thread-safe read for cell configuration (called from main thread).
@@ -170,37 +168,34 @@ final class MatchListViewModel: ObservableObject {
     // MARK: - Fetch
 
     private func fetchAll(reset: Bool = false) {
-        loadState = .loading
+        DispatchQueue.main.async {
+            self.loadState = .loading
+        }
 
         if reset {
-            dataQueue.async { [weak self] in
-                self?.fetchFromNetwork(reset: true)
-            }
+            fetchFromNetwork(reset: true)
             return
         }
 
         // Try storage first, then background-refresh from network
-        dataQueue.async { [weak self] in
-            guard let self else { return }
-            self.fetchCancellable?.cancel()
-            self.fetchCancellable = self.dataProvider.fetchMatchesFromStorage()
-                .receive(on: self.dataQueue)
-                .sink { [weak self] cached in
-                    guard let self else { return }
-                    if let cached, !cached.isEmpty {
-                        let pageIDs = self.applyMatches(cached)
-                        DispatchQueue.main.async {
-                            self.displayedMatchIDs = pageIDs
-                            self.loadState = .loaded
-                            self.connectAndStartTimer()
-                        }
-                        // Background refresh for fresh data
-                        self.fetchFromNetwork(reset: false)
-                    } else {
-                        self.fetchFromNetwork(reset: false)
+        fetchCancellable?.cancel()
+        fetchCancellable = dataProvider.fetchMatchesFromStorage()
+            .receive(on: dataQueue)
+            .sink { [weak self] cached in
+                guard let self else { return }
+                if let cached, !cached.isEmpty {
+                    let pageIDs = self.applyMatches(cached)
+                    DispatchQueue.main.async {
+                        self.displayedMatchIDs = pageIDs
+                        self.loadState = .loaded
+                        self.connectAndStartTimer()
                     }
+                    // Background refresh for fresh data
+                    self.fetchFromNetwork(reset: false)
+                } else {
+                    self.fetchFromNetwork(reset: false)
                 }
-        }
+            }
     }
 
     /// Runs on `dataQueue`.
