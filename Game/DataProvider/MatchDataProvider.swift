@@ -14,22 +14,22 @@ final class MatchDataProvider: MatchDataProviding {
     }
 
     func fetchMatchesWithOdds() -> AnyPublisher<[MatchWithOdds], Error> {
-        let matchesPublisher: AnyPublisher<[Match], Error> = networkService
-            .get(path: "/matches")
-        let retriedMatches = matchesPublisher.retry(5).eraseToAnyPublisher()
+        let matchesPublisher: AnyPublisher<[Match], Error> = networkService.get(path: "/matches")
+        let oddsPublisher: AnyPublisher<[MatchOdds], Error> = networkService.get(path: "/odds")
 
-        let oddsPublisher: AnyPublisher<[MatchOdds], Error> = networkService
-            .get(path: "/odds")
-        let retriedOdds = oddsPublisher.retry(5).eraseToAnyPublisher()
-
-        return Publishers.Zip(retriedMatches, retriedOdds)
-            .map { matches, odds in
-                let oddsMap = Dictionary(uniqueKeysWithValues: odds.map { ($0.matchID, $0) })
-                return matches.compactMap { match in
+        return Publishers.Zip(
+            matchesPublisher.retry(5),
+            oddsPublisher.retry(5)
+        )
+        .map { matches, odds in
+            let oddsMap = Dictionary(uniqueKeysWithValues: odds.map { ($0.matchID, $0) })
+            return matches
+                .compactMap { match in
                     guard let matchOdds = oddsMap[match.matchID] else { return nil }
                     return MatchWithOdds(match: match, odds: matchOdds)
                 }
-            }
-            .eraseToAnyPublisher()
+                .sorted { $0.match.startTime < $1.match.startTime }
+        }
+        .eraseToAnyPublisher()
     }
 }
