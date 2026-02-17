@@ -14,11 +14,14 @@ final class MatchListViewModel: ObservableObject {
     @Published private(set) var loadState: LoadState = .idle
     @Published private(set) var displayedMatchIDs: [Int] = []
 
-    private(set) var matchDataMap: [Int: MatchWithOdds] = [:]
-
     /// Emits matchIDs whose odds changed — subscribers reconfigure only those cells.
     let oddsUpdated = PassthroughSubject<[Int], Never>()
 
+    // MARK: - Data queue–owned state
+
+    private let dataQueue = DispatchQueue(label: "io.wane.Game.MatchListViewModel.data", qos: .userInitiated)
+    private let dataQueueKey = DispatchSpecificKey<Void>()
+    private var matchDataMap: [Int: MatchWithOdds] = [:]
     private var allMatches: [MatchWithOdds] = []
     private var currentPage = 0
     private var hasMorePages = true
@@ -36,6 +39,7 @@ final class MatchListViewModel: ObservableObject {
 
     init(dataProvider: MatchDataProviding) {
         self.dataProvider = dataProvider
+        dataQueue.setSpecific(key: dataQueueKey, value: ())
         subscribeToOddsStream()
         observeAppLifecycle()
     }
@@ -46,16 +50,46 @@ final class MatchListViewModel: ObservableObject {
         dataProvider.disconnectOddsStream()
     }
 
-    // MARK: - Pagination
+    // MARK: - Public (main thread)
 
     func loadNextPage() {
-        guard !isLoading, hasMorePages else { return }
+        guard !isLoading else { return }
 
-        if allMatches.isEmpty {
-            fetchAll()
-        } else {
-            appendNextPage()
+        dataQueue.async { [weak self] in
+            guard let self else { return }
+            guard self.hasMorePages else { return }
+
+            if self.allMatches.isEmpty {
+                DispatchQueue.main.async {
+                    self.fetchAll()
+                }
+            } else {
+                let ids = self.computeNextPage()
+                DispatchQueue.main.async {
+                    guard let ids else { return }
+                    self.displayedMatchIDs.append(contentsOf: ids)
+                }
+            }
         }
+    }
+
+    func retry() {
+        dataQueue.async { [weak self] in
+            guard let self else { return }
+            self.allMatches = []
+            self.matchDataMap = [:]
+            self.currentPage = 0
+            self.hasMorePages = true
+        }
+        fetchAll(reset: true)
+    }
+
+    /// Thread-safe read for cell configuration (called from main thread).
+    func match(for id: Int) -> MatchWithOdds? {
+        if DispatchQueue.getSpecific(key: dataQueueKey) != nil {
+            return matchDataMap[id]
+        }
+        return dataQueue.sync { matchDataMap[id] }
     }
 
     // MARK: - App lifecycle & caching
@@ -79,9 +113,14 @@ final class MatchListViewModel: ObservableObject {
     }
 
     private func handleDidBecomeActive() {
-        guard !allMatches.isEmpty else { return }
-        dataProvider.connectOddsStream(matchIDs: allMatches.map(\.match.matchID))
-        startCacheTimer()
+        dataQueue.async { [weak self] in
+            guard let self, !self.allMatches.isEmpty else { return }
+            let matchIDs = self.allMatches.map(\.match.matchID)
+            DispatchQueue.main.async {
+                self.dataProvider.connectOddsStream(matchIDs: matchIDs)
+                self.startCacheTimer()
+            }
+        }
     }
 
     private func startCacheTimer() {
@@ -92,22 +131,29 @@ final class MatchListViewModel: ObservableObject {
     }
 
     private func saveToStorage() {
-        guard !allMatches.isEmpty else { return }
-        dataProvider.saveToStorage(allMatches)
+        dataQueue.async { [weak self] in
+            guard let self, !self.allMatches.isEmpty else { return }
+            self.dataProvider.saveToStorage(self.allMatches)
+        }
     }
 
     // MARK: - Real-time odds
 
     private func subscribeToOddsStream() {
         dataProvider.oddsStream
+            .receive(on: dataQueue)
+            .compactMap { [weak self] batch -> [Int]? in
+                self?.processOddsUpdates(batch)
+            }
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] oddsBatch in
-                self?.applyOddsUpdates(oddsBatch)
+            .sink { [weak self] changedIDs in
+                self?.oddsUpdated.send(changedIDs)
             }
             .store(in: &cancellables)
     }
 
-    private func applyOddsUpdates(_ batch: [MatchOdds]) {
+    /// Runs on `dataQueue`.
+    private func processOddsUpdates(_ batch: [MatchOdds]) -> [Int]? {
         var changedIDs: [Int] = []
         for newOdds in batch {
             guard let existing = matchDataMap[newOdds.matchID] else { continue }
@@ -118,30 +164,28 @@ final class MatchListViewModel: ObservableObject {
             }
             changedIDs.append(newOdds.matchID)
         }
-        if !changedIDs.isEmpty {
-            oddsUpdated.send(changedIDs)
-        }
+        return changedIDs.isEmpty ? nil : changedIDs
     }
 
-    func match(for id: Int) -> MatchWithOdds? {
-        matchDataMap[id]
-    }
-
-    // MARK: - Private
-
-    func retry() {
-        allMatches = []
-        hasMorePages = true
-        fetchAll(reset: true)
-    }
+    // MARK: - Fetch
 
     private func fetchAll(reset: Bool = false) {
-        Task { @MainActor in
-            loadState = .loading
-        }
+        loadState = .loading
 
         fetchCancellable?.cancel()
         fetchCancellable = dataProvider.fetchMatchesWithOdds(reset: reset)
+            .receive(on: dataQueue)
+            .map { [weak self] matches -> [Int] in
+                guard let self else { return [] }
+                self.allMatches = matches
+                self.matchDataMap = [:]
+                self.currentPage = 0
+                self.hasMorePages = true
+                for m in matches {
+                    self.matchDataMap[m.match.matchID] = m
+                }
+                return self.computeNextPage() ?? []
+            }
             .receive(on: DispatchQueue.main)
             .sink(
                 receiveCompletion: { [weak self] completion in
@@ -150,37 +194,36 @@ final class MatchListViewModel: ObservableObject {
                         self.loadState = .failed(error)
                     }
                 },
-                receiveValue: { [weak self] matches in
+                receiveValue: { [weak self] pageIDs in
                     guard let self else { return }
-                    self.matchDataMap = [:]
-                    self.displayedMatchIDs = []
-                    self.currentPage = 0
-                    self.allMatches = matches
-                    for m in matches {
-                        self.matchDataMap[m.match.matchID] = m
-                    }
-                    self.appendNextPage()
+                    self.displayedMatchIDs = pageIDs
                     self.loadState = .loaded
-                    self.dataProvider.connectOddsStream(matchIDs: self.allMatches.map(\.match.matchID))
-                    self.startCacheTimer()
+
+                    self.dataQueue.async { [weak self] in
+                        guard let self else { return }
+                        let matchIDs = self.allMatches.map(\.match.matchID)
+                        DispatchQueue.main.async {
+                            self.dataProvider.connectOddsStream(matchIDs: matchIDs)
+                            self.startCacheTimer()
+                        }
+                    }
                 }
             )
     }
 
-    private func appendNextPage() {
+    /// Runs on `dataQueue`. Returns next page IDs or nil if no more pages.
+    private func computeNextPage() -> [Int]? {
         let start = currentPage * pageSize
         guard start < allMatches.count else {
             hasMorePages = false
-            return
+            return nil
         }
         let end = min(start + pageSize, allMatches.count)
-        let page = allMatches[start..<end]
-
-        displayedMatchIDs.append(contentsOf: page.map(\.match.matchID))
+        let ids = allMatches[start..<end].map(\.match.matchID)
         currentPage += 1
-
         if end >= allMatches.count {
             hasMorePages = false
         }
+        return ids
     }
 }
