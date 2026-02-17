@@ -31,6 +31,7 @@ final class MatchListViewModel: ObservableObject {
 
     private let dataProvider: MatchDataProviding
     private var cancellables = Set<AnyCancellable>()
+    private var fetchCancellable: AnyCancellable?
     private var cacheTimer: Timer?
 
     init(dataProvider: MatchDataProviding) {
@@ -41,6 +42,7 @@ final class MatchListViewModel: ObservableObject {
 
     deinit {
         cacheTimer?.invalidate()
+        fetchCancellable?.cancel()
         dataProvider.disconnectOddsStream()
     }
 
@@ -64,6 +66,7 @@ final class MatchListViewModel: ObservableObject {
             .store(in: &cancellables)
 
         NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)
+            .dropFirst()
             .sink { [weak self] _ in self?.handleDidBecomeActive() }
             .store(in: &cancellables)
     }
@@ -137,7 +140,8 @@ final class MatchListViewModel: ObservableObject {
             loadState = .loading
         }
 
-        dataProvider.fetchMatchesWithOdds(reset: reset)
+        fetchCancellable?.cancel()
+        fetchCancellable = dataProvider.fetchMatchesWithOdds(reset: reset)
             .receive(on: DispatchQueue.main)
             .sink(
                 receiveCompletion: { [weak self] completion in
@@ -161,7 +165,6 @@ final class MatchListViewModel: ObservableObject {
                     self.startCacheTimer()
                 }
             )
-            .store(in: &cancellables)
     }
 
     private func appendNextPage() {

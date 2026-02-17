@@ -22,6 +22,17 @@ final class MatchTableViewCell: UITableViewCell {
 
     private var previousOdds: MatchOdds?
 
+    override func prepareForReuse() {
+        super.prepareForReuse()
+        previousOdds = nil
+        teamAOddsLabel.layer.removeAllAnimations()
+        teamBOddsLabel.layer.removeAllAnimations()
+        teamAOddsLabel.textColor = .secondaryLabel
+        teamBOddsLabel.textColor = .secondaryLabel
+        teamAOddsLabel.transform = .identity
+        teamBOddsLabel.transform = .identity
+    }
+
     func configure(with data: MatchWithOdds) {
         let shouldBlink = previousOdds != nil
             && (previousOdds?.teamAOdds != data.odds.teamAOdds
