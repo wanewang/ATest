@@ -90,7 +90,7 @@ final class MatchTableViewCell: UITableViewCell {
         teamBOddsLabel.textAlignment = .right
 
         startTimeLabel.font = .systemFont(ofSize: 12)
-        startTimeLabel.textColor = .tertiaryLabel
+        startTimeLabel.textColor = .secondaryLabel
         startTimeLabel.textAlignment = .center
 
         let namesRow = UIStackView(arrangedSubviews: [teamANameLabel, teamBNameLabel])
