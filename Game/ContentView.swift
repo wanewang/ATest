@@ -8,14 +8,14 @@
 import SwiftUI
 
 struct ContentView: View {
+
+    @StateObject private var viewModel = MatchListViewModel(
+        dataProvider: MatchDataProvider(networkService: MockNetworkService())
+    )
+
     var body: some View {
-        VStack {
-            Image(systemName: "globe")
-                .imageScale(.large)
-                .foregroundStyle(.tint)
-            Text("Hello, world!")
-        }
-        .padding()
+        MatchListTableView(viewModel: viewModel)
+            .ignoresSafeArea()
     }
 }
 
