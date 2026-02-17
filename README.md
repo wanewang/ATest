@@ -21,13 +21,13 @@ Game/
 │   └── MockWebSocketProvider.swift# Fake WebSocket, one item per 10-100ms, max 10/sec
 │
 ├── DataProvider/
-│   └── MatchDataProvider.swift    # Fetches /matches + /odds, merges, sorts, caches
+│   └── MatchDataProvider.swift    # Storage-first load, network fetch, WebSocket relay
 │
 ├── Storage/
 │   └── MatchStorage.swift         # JSON file cache for offline/resume support
 │
 ├── ViewModels/
-│   └── MatchListViewModel.swift   # Pagination, real-time odds, app lifecycle
+│   └── MatchListViewModel.swift   # Pagination, real-time odds, app lifecycle, all on dataQueue
 │
 ├── Views/
 │   ├── MatchListTableView.swift   # UITableView wrapped for SwiftUI (DiffableDataSource)
@@ -39,12 +39,12 @@ Game/
 
 ## Data Flow
 
-1. **MatchDataProvider** checks local cache. If cached, filters expired matches and fetches fresh odds. If no cache, fetches both `/matches` and `/odds` via Combine Zip with retry.
-2. **MatchListViewModel** receives sorted data, pages it (40 per page), and connects the WebSocket for live odds.
+1. **MatchDataProvider** loads from storage first (`fetchMatchesFromStorage`). If cached matches exist, it filters out expired ones, seeds `MockNetworkService` with the cached matches via `generateAdditionalData`, and returns them immediately. It then fetches `/matches` + `/odds` via Combine Zip with retry(5), merges and sorts by start time. On reset (pull-to-refresh), storage is cleared and `NetworkService` regenerates all data.
+2. **MatchListViewModel** calls `fetchMatchesFromStorage` on `dataQueue`. If cache hits, it displays cached data instantly, then background-refreshes from network. If no cache, it fetches directly from network. All data processing (`matchDataMap`, `allMatches`, pagination) runs on `dataQueue`; only `@Published` properties update on main thread.
 3. **MockWebSocketProvider** sends one random odds update every 10–100ms (max 10 per second).
 4. **MatchListTableView** uses DiffableDataSource — only cells with changed odds get reconfigured (blink animation).
 5. Every 10 seconds the current data is cached. On background: cache once and disconnect WebSocket. On foreground: reconnect and resume caching.
 
 ## Threading
 
-All shared data (`matchDataMap`, `allMatches`, pagination state) is owned by a serial `dataQueue` in `MatchListViewModel`. The main thread only updates `@Published` properties and sends UI signals. Cell reads go through `dataQueue.sync` for a safe O(1) dictionary lookup.
+All shared data (`matchDataMap`, `allMatches`, pagination state, `fetchCancellable`) is owned by a serial `dataQueue` in `MatchListViewModel`. Network fetches and storage loads subscribe on `dataQueue`. The main thread only updates `@Published` properties (`displayedMatchIDs`, `loadState`) and sends UI signals (`oddsUpdated`). Cell reads go through `dataQueue.sync` for a safe O(1) dictionary lookup. `MockNetworkService` emits on a background queue (`DispatchQueue.global`).
