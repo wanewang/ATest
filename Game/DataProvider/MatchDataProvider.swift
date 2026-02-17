@@ -50,11 +50,30 @@ final class MatchDataProvider: MatchDataProviding {
         }
 
         if !reset, let cached = storage.load() {
-            return Just(cached)
-                .setFailureType(to: Error.self)
+            let now = Date()
+            let validMatches = cached.filter { $0.match.startTime > now }
+            guard !validMatches.isEmpty else {
+                storage.clear()
+                return fetchFromNetwork()
+            }
+
+            let oddsPublisher: AnyPublisher<[MatchOdds], Error> = networkService.get(path: "/odds")
+            return oddsPublisher
+                .retry(5)
+                .map { freshOdds in
+                    let oddsMap = Dictionary(uniqueKeysWithValues: freshOdds.map { ($0.matchID, $0) })
+                    return validMatches.map { item in
+                        guard let newOdds = oddsMap[item.match.matchID] else { return item }
+                        return MatchWithOdds(match: item.match, odds: newOdds)
+                    }
+                }
                 .eraseToAnyPublisher()
         }
 
+        return fetchFromNetwork()
+    }
+
+    private func fetchFromNetwork() -> AnyPublisher<[MatchWithOdds], Error> {
         let matchesPublisher: AnyPublisher<[Match], Error> = networkService.get(path: "/matches")
         let oddsPublisher: AnyPublisher<[MatchOdds], Error> = networkService.get(path: "/odds")
 
