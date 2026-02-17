@@ -24,6 +24,7 @@ final class MatchDataProvider: MatchDataProviding {
     private let networkService: NetworkService
     private let webSocketProvider: WebSocketProviding
     private let storage: MatchStoring
+    private let storageQueue = DispatchQueue(label: "io.wane.Game.MatchDataProvider.storage", qos: .utility)
 
     init(networkService: NetworkService, webSocketProvider: WebSocketProviding, storage: MatchStoring = MatchStorage()) {
         self.networkService = networkService
@@ -32,7 +33,9 @@ final class MatchDataProvider: MatchDataProviding {
     }
 
     func saveToStorage(_ matches: [MatchWithOdds]) {
-        storage.save(matches)
+        storageQueue.async { [storage] in
+            storage.save(matches)
+        }
     }
 
     func connectOddsStream(matchIDs: [Int]) {
@@ -46,31 +49,51 @@ final class MatchDataProvider: MatchDataProviding {
     func fetchMatchesWithOdds(reset: Bool) -> AnyPublisher<[MatchWithOdds], Error> {
         if reset {
             networkService.reset()
-            storage.clear()
         }
 
-        if !reset, let cached = storage.load() {
-            let now = Date()
-            let validMatches = cached.filter { $0.match.startTime > now }
-            guard !validMatches.isEmpty else {
-                storage.clear()
-                return fetchFromNetwork()
-            }
+        let cachedMatchesPublisher = Deferred { [self] in
+            Future<[MatchWithOdds]?, Never> { promise in
+                self.storageQueue.async { [storage = self.storage] in
+                    if reset {
+                        storage.clear()
+                        promise(.success(nil))
+                        return
+                    }
 
-            let oddsPublisher: AnyPublisher<[MatchOdds], Error> = networkService.get(path: "/odds")
-            return oddsPublisher
-                .retry(5)
-                .map { freshOdds in
-                    let oddsMap = Dictionary(uniqueKeysWithValues: freshOdds.map { ($0.matchID, $0) })
-                    return validMatches.map { item in
-                        guard let newOdds = oddsMap[item.match.matchID] else { return item }
-                        return MatchWithOdds(match: item.match, odds: newOdds)
+                    guard let cached = storage.load() else {
+                        promise(.success(nil))
+                        return
+                    }
+
+                    let now = Date()
+                    let validMatches = cached.filter { $0.match.startTime > now }
+                    if validMatches.isEmpty {
+                        storage.clear()
+                        promise(.success(nil))
+                    } else {
+                        promise(.success(validMatches))
                     }
                 }
-                .eraseToAnyPublisher()
+            }
         }
 
-        return fetchFromNetwork()
+        return cachedMatchesPublisher
+            .setFailureType(to: Error.self)
+            .flatMap { [networkService] validMatches -> AnyPublisher<[MatchWithOdds], Error> in
+                guard let validMatches else {
+                    return self.fetchFromNetwork()
+                }
+
+                let oddsPublisher: AnyPublisher<[MatchOdds], Error> = networkService.get(path: "/odds")
+                return oddsPublisher
+                    .retry(5)
+                    .map { freshOdds in
+                        let oddsMap = self.oddsMapByMatchID(from: freshOdds)
+                        return self.refresh(matches: validMatches.map(\.match), with: oddsMap)
+                    }
+                    .eraseToAnyPublisher()
+            }
+            .eraseToAnyPublisher()
     }
 
     private func fetchFromNetwork() -> AnyPublisher<[MatchWithOdds], Error> {
@@ -82,14 +105,28 @@ final class MatchDataProvider: MatchDataProviding {
             oddsPublisher.retry(5)
         )
         .map { matches, odds in
-            let oddsMap = Dictionary(uniqueKeysWithValues: odds.map { ($0.matchID, $0) })
-            return matches
-                .compactMap { match in
-                    guard let matchOdds = oddsMap[match.matchID] else { return nil }
-                    return MatchWithOdds(match: match, odds: matchOdds)
-                }
-                .sorted { $0.match.startTime < $1.match.startTime }
+            let oddsMap = self.oddsMapByMatchID(from: odds)
+            return self.merge(matches: matches, with: oddsMap)
         }
         .eraseToAnyPublisher()
+    }
+
+    private func oddsMapByMatchID(from odds: [MatchOdds]) -> [Int: MatchOdds] {
+        odds.reduce(into: [:]) { partialResult, item in
+            partialResult[item.matchID] = item
+        }
+    }
+
+    private func refresh(matches: [Match], with oddsMap: [Int: MatchOdds]) -> [MatchWithOdds] {
+        matches
+            .compactMap { match in
+                guard let matchOdds = oddsMap[match.matchID] else { return nil }
+                return MatchWithOdds(match: match, odds: matchOdds)
+            }
+    }
+
+    private func merge(matches: [Match], with oddsMap: [Int: MatchOdds]) -> [MatchWithOdds] {
+        refresh(matches: matches, with: oddsMap)
+            .sorted { $0.match.startTime < $1.match.startTime }
     }
 }
