@@ -10,34 +10,55 @@ final class MockWebSocketProvider: WebSocketProviding {
     private let subject = PassthroughSubject<[MatchOdds], Never>()
     private var matchIDs: [Int] = []
     private var timer: Timer?
+    private var secondTimer: Timer?
+    private var sentThisSecond = 0
 
     func connect(matchIDs: [Int]) {
         self.matchIDs = matchIDs
-        timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+        cancelTimers()
+
+        // Reset counter every second
+        secondTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            self?.sentThisSecond = 0
+        }
+
+        scheduleNextBroadcast()
+    }
+
+    func disconnect() {
+        cancelTimers()
+        matchIDs = []
+    }
+
+    private func scheduleNextBroadcast() {
+        let delay = Double.random(in: 0.01...0.1)
+        timer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
             self?.broadcast()
         }
     }
 
-    func disconnect() {
-        timer?.invalidate()
-        timer = nil
-    }
-
     private func broadcast() {
-        guard !matchIDs.isEmpty else { return }
-
-        let count = Int.random(in: 1...min(10, matchIDs.count))
-        let selected = matchIDs.shuffled().prefix(count)
-
-        let updates = selected.map { id in
-            MatchOdds(
-                matchID: id,
-                teamAOdds: (Double.random(in: 1.10...5.00) * 100).rounded() / 100,
-                teamBOdds: (Double.random(in: 1.10...5.00) * 100).rounded() / 100
-            )
+        guard let matchID = matchIDs.randomElement(), sentThisSecond < 10 else {
+            scheduleNextBroadcast()
+            return
         }
 
-        subject.send(updates)
+        let update = MatchOdds(
+            matchID: matchID,
+            teamAOdds: (Double.random(in: 0.4...5.00) * 100).rounded() / 100,
+            teamBOdds: (Double.random(in: 0.4...5.00) * 100).rounded() / 100
+        )
+
+        sentThisSecond += 1
+        subject.send([update])
+        scheduleNextBroadcast()
+    }
+
+    private func cancelTimers() {
+        timer?.invalidate()
+        timer = nil
+        secondTimer?.invalidate()
+        secondTimer = nil
+        sentThisSecond = 0
     }
 }
