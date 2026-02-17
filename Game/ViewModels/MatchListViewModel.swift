@@ -3,6 +3,14 @@ import Combine
 
 final class MatchListViewModel: ObservableObject {
 
+    enum LoadState {
+        case idle
+        case loading
+        case loaded
+        case failed(Error)
+    }
+
+    @Published private(set) var loadState: LoadState = .idle
     @Published private(set) var displayedMatchIDs: [Int] = []
 
     private(set) var matchDataMap: [Int: MatchWithOdds] = [:]
@@ -12,9 +20,13 @@ final class MatchListViewModel: ObservableObject {
 
     private var allMatches: [MatchWithOdds] = []
     private var currentPage = 0
-    private var isLoading = false
     private var hasMorePages = true
     private let pageSize = 40
+
+    private var isLoading: Bool {
+        if case .loading = loadState { return true }
+        return false
+    }
 
     private let dataProvider: MatchDataProviding
     private var cancellables = Set<AnyCancellable>()
@@ -56,22 +68,37 @@ final class MatchListViewModel: ObservableObject {
 
     // MARK: - Private
 
+    func retry() {
+        allMatches = []
+        hasMorePages = true
+        fetchAll()
+    }
+
     private func fetchAll() {
-        isLoading = true
+        Task { @MainActor in
+            loadState = .loading
+        }
 
         dataProvider.fetchMatchesWithOdds()
             .receive(on: DispatchQueue.main)
             .sink(
                 receiveCompletion: { [weak self] completion in
-                    self?.isLoading = false
+                    guard let self else { return }
+                    if case .failure(let error) = completion {
+                        self.loadState = .failed(error)
+                    }
                 },
                 receiveValue: { [weak self] matches in
                     guard let self else { return }
+                    self.matchDataMap = [:]
+                    self.displayedMatchIDs = []
+                    self.currentPage = 0
                     self.allMatches = matches
                     for m in matches {
                         self.matchDataMap[m.match.matchID] = m
                     }
                     self.appendNextPage()
+                    self.loadState = .loaded
                 }
             )
             .store(in: &cancellables)

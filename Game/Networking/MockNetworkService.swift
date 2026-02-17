@@ -34,8 +34,10 @@ final class MockNetworkService: NetworkService {
             }
 
             let decoded = try decoder.decode(T.self, from: data)
+            let randomDelay = Double.random(in: 0.5...3.0)
             return Just(decoded)
                 .setFailureType(to: Error.self)
+                .delay(for: .seconds(randomDelay), scheduler: DispatchQueue.main)
                 .eraseToAnyPublisher()
         } catch {
             return Fail(error: NetworkError.decodingFailed)

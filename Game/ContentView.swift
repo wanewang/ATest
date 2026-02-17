@@ -14,8 +14,34 @@ struct ContentView: View {
     )
 
     var body: some View {
-        MatchListTableView(viewModel: viewModel)
-            .ignoresSafeArea()
+        ZStack {
+            MatchListTableView(viewModel: viewModel)
+                .ignoresSafeArea()
+
+            switch viewModel.loadState {
+            case .idle, .loaded:
+                EmptyView()
+            case .loading:
+                Color.black.opacity(0.3)
+                    .ignoresSafeArea()
+                ProgressView()
+                    .controlSize(.large)
+                    .tint(.white)
+            case .failed(let error):
+                Color.black.opacity(0.3)
+                    .ignoresSafeArea()
+                VStack(spacing: 16) {
+                    Text(error.localizedDescription)
+                        .foregroundStyle(.white)
+                        .multilineTextAlignment(.center)
+                    Button("Retry") {
+                        viewModel.retry()
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+                .padding()
+            }
+        }
     }
 }
 
