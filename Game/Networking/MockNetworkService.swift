@@ -76,8 +76,8 @@ final class MockNetworkService: NetworkService {
                 teamBIndex = Int.random(in: 0..<teamNames.count)
             }
 
-            // Random gap from now: 30 minutes to 7 days
-            let gapSeconds = Int.random(in: 1_800...604_800)
+            // Random gap from now: 10 minutes to 1 day
+            let gapSeconds = Int.random(in: 600...86_400)
             let startTime = now.addingTimeInterval(TimeInterval(gapSeconds))
 
             matches.append(Match(
