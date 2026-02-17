@@ -1,6 +1,6 @@
 import Foundation
 
-struct MatchWithOdds: Identifiable {
+struct MatchWithOdds: Codable, Identifiable {
     let match: Match
     let odds: MatchOdds
 

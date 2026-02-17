@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 import Combine
 
 final class MatchListViewModel: ObservableObject {
@@ -30,13 +31,16 @@ final class MatchListViewModel: ObservableObject {
 
     private let dataProvider: MatchDataProviding
     private var cancellables = Set<AnyCancellable>()
+    private var cacheTimer: Timer?
 
     init(dataProvider: MatchDataProviding) {
         self.dataProvider = dataProvider
         subscribeToOddsStream()
+        observeAppLifecycle()
     }
 
     deinit {
+        cacheTimer?.invalidate()
         dataProvider.disconnectOddsStream()
     }
 
@@ -50,6 +54,43 @@ final class MatchListViewModel: ObservableObject {
         } else {
             appendNextPage()
         }
+    }
+
+    // MARK: - App lifecycle & caching
+
+    private func observeAppLifecycle() {
+        NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)
+            .sink { [weak self] _ in self?.handleDidEnterBackground() }
+            .store(in: &cancellables)
+
+        NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)
+            .sink { [weak self] _ in self?.handleDidBecomeActive() }
+            .store(in: &cancellables)
+    }
+
+    private func handleDidEnterBackground() {
+        cacheTimer?.invalidate()
+        cacheTimer = nil
+        saveToStorage()
+        dataProvider.disconnectOddsStream()
+    }
+
+    private func handleDidBecomeActive() {
+        guard !allMatches.isEmpty else { return }
+        dataProvider.connectOddsStream(matchIDs: allMatches.map(\.match.matchID))
+        startCacheTimer()
+    }
+
+    private func startCacheTimer() {
+        cacheTimer?.invalidate()
+        cacheTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
+            self?.saveToStorage()
+        }
+    }
+
+    private func saveToStorage() {
+        guard !allMatches.isEmpty else { return }
+        dataProvider.saveToStorage(allMatches)
     }
 
     // MARK: - Real-time odds
@@ -117,6 +158,7 @@ final class MatchListViewModel: ObservableObject {
                     self.appendNextPage()
                     self.loadState = .loaded
                     self.dataProvider.connectOddsStream(matchIDs: self.allMatches.map(\.match.matchID))
+                    self.startCacheTimer()
                 }
             )
             .store(in: &cancellables)

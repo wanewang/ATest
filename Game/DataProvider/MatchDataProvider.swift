@@ -6,6 +6,7 @@ protocol MatchDataProviding {
     func fetchMatchesWithOdds(reset: Bool) -> AnyPublisher<[MatchWithOdds], Error>
     func connectOddsStream(matchIDs: [Int])
     func disconnectOddsStream()
+    func saveToStorage(_ matches: [MatchWithOdds])
 }
 
 extension MatchDataProviding {
@@ -22,14 +23,16 @@ final class MatchDataProvider: MatchDataProviding {
 
     private let networkService: NetworkService
     private let webSocketProvider: WebSocketProviding
+    private let storage: MatchStoring
 
-    init(networkService: NetworkService, webSocketProvider: WebSocketProviding) {
+    init(networkService: NetworkService, webSocketProvider: WebSocketProviding, storage: MatchStoring = MatchStorage()) {
         self.networkService = networkService
         self.webSocketProvider = webSocketProvider
+        self.storage = storage
     }
 
-    deinit {
-        print("cache here?")
+    func saveToStorage(_ matches: [MatchWithOdds]) {
+        storage.save(matches)
     }
 
     func connectOddsStream(matchIDs: [Int]) {
@@ -43,6 +46,13 @@ final class MatchDataProvider: MatchDataProviding {
     func fetchMatchesWithOdds(reset: Bool) -> AnyPublisher<[MatchWithOdds], Error> {
         if reset {
             networkService.reset()
+            storage.clear()
+        }
+
+        if !reset, let cached = storage.load() {
+            return Just(cached)
+                .setFailureType(to: Error.self)
+                .eraseToAnyPublisher()
         }
 
         let matchesPublisher: AnyPublisher<[Match], Error> = networkService.get(path: "/matches")
