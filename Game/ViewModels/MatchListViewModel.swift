@@ -172,19 +172,44 @@ final class MatchListViewModel: ObservableObject {
     private func fetchAll(reset: Bool = false) {
         loadState = .loading
 
+        if reset {
+            dataQueue.async { [weak self] in
+                self?.fetchFromNetwork(reset: true)
+            }
+            return
+        }
+
+        // Try storage first, then background-refresh from network
+        dataQueue.async { [weak self] in
+            guard let self else { return }
+            self.fetchCancellable?.cancel()
+            self.fetchCancellable = self.dataProvider.fetchMatchesFromStorage()
+                .receive(on: self.dataQueue)
+                .sink { [weak self] cached in
+                    guard let self else { return }
+                    if let cached, !cached.isEmpty {
+                        let pageIDs = self.applyMatches(cached)
+                        DispatchQueue.main.async {
+                            self.displayedMatchIDs = pageIDs
+                            self.loadState = .loaded
+                            self.connectAndStartTimer()
+                        }
+                        // Background refresh for fresh data
+                        self.fetchFromNetwork(reset: false)
+                    } else {
+                        self.fetchFromNetwork(reset: false)
+                    }
+                }
+        }
+    }
+
+    /// Runs on `dataQueue`.
+    private func fetchFromNetwork(reset: Bool) {
         fetchCancellable?.cancel()
         fetchCancellable = dataProvider.fetchMatchesWithOdds(reset: reset)
             .receive(on: dataQueue)
             .map { [weak self] matches -> [Int] in
-                guard let self else { return [] }
-                self.allMatches = matches
-                self.matchDataMap = [:]
-                self.currentPage = 0
-                self.hasMorePages = true
-                for m in matches {
-                    self.matchDataMap[m.match.matchID] = m
-                }
-                return self.computeNextPage() ?? []
+                self?.applyMatches(matches) ?? []
             }
             .receive(on: DispatchQueue.main)
             .sink(
@@ -198,17 +223,33 @@ final class MatchListViewModel: ObservableObject {
                     guard let self else { return }
                     self.displayedMatchIDs = pageIDs
                     self.loadState = .loaded
-
-                    self.dataQueue.async { [weak self] in
-                        guard let self else { return }
-                        let matchIDs = self.allMatches.map(\.match.matchID)
-                        DispatchQueue.main.async {
-                            self.dataProvider.connectOddsStream(matchIDs: matchIDs)
-                            self.startCacheTimer()
-                        }
-                    }
+                    self.connectAndStartTimer()
                 }
             )
+    }
+
+    /// Runs on `dataQueue`. Replaces all data and returns first page IDs.
+    @discardableResult
+    private func applyMatches(_ matches: [MatchWithOdds]) -> [Int] {
+        allMatches = matches
+        matchDataMap = [:]
+        currentPage = 0
+        hasMorePages = true
+        for m in matches {
+            matchDataMap[m.match.matchID] = m
+        }
+        return computeNextPage() ?? []
+    }
+
+    private func connectAndStartTimer() {
+        dataQueue.async { [weak self] in
+            guard let self else { return }
+            let matchIDs = self.allMatches.map(\.match.matchID)
+            DispatchQueue.main.async {
+                self.dataProvider.connectOddsStream(matchIDs: matchIDs)
+                self.startCacheTimer()
+            }
+        }
     }
 
     /// Runs on `dataQueue`. Returns next page IDs or nil if no more pages.

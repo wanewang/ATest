@@ -3,6 +3,7 @@ import Combine
 
 protocol MatchDataProviding {
     var oddsStream: AnyPublisher<[MatchOdds], Never> { get }
+    func fetchMatchesFromStorage() -> AnyPublisher<[MatchWithOdds]?, Never>
     func fetchMatchesWithOdds(reset: Bool) -> AnyPublisher<[MatchWithOdds], Error>
     func connectOddsStream(matchIDs: [Int])
     func disconnectOddsStream()
@@ -46,54 +47,43 @@ final class MatchDataProvider: MatchDataProviding {
         webSocketProvider.disconnect()
     }
 
-    func fetchMatchesWithOdds(reset: Bool) -> AnyPublisher<[MatchWithOdds], Error> {
-        if reset {
-            networkService.reset()
-        }
-
-        let cachedMatchesPublisher = Deferred { [self] in
+    func fetchMatchesFromStorage() -> AnyPublisher<[MatchWithOdds]?, Never> {
+        Deferred { [storageQueue, storage, networkService] in
             Future<[MatchWithOdds]?, Never> { promise in
-                self.storageQueue.async { [storage = self.storage] in
-                    if reset {
-                        storage.clear()
-                        promise(.success(nil))
-                        return
-                    }
-
+                storageQueue.async {
                     guard let cached = storage.load() else {
                         promise(.success(nil))
                         return
                     }
-
                     let now = Date()
-                    let validMatches = cached.filter { $0.match.startTime > now }
-                    if validMatches.isEmpty {
+                    let valid = cached.filter { $0.match.startTime > now }
+                    guard !valid.isEmpty else {
                         storage.clear()
                         promise(.success(nil))
-                    } else {
-                        promise(.success(validMatches))
+                        return
                     }
+
+                    // Seed mock network with cached matches + new data to pad to 100+
+                    let existingMatches = valid.map(\.match)
+                    networkService.generateAdditionalData(
+                        excluding: existingMatches,
+                        targetTotal: max(100, existingMatches.count)
+                    )
+
+                    promise(.success(valid))
                 }
             }
         }
+        .eraseToAnyPublisher()
+    }
 
-        return cachedMatchesPublisher
-            .setFailureType(to: Error.self)
-            .flatMap { [networkService] validMatches -> AnyPublisher<[MatchWithOdds], Error> in
-                guard let validMatches else {
-                    return self.fetchFromNetwork()
-                }
+    func fetchMatchesWithOdds(reset: Bool) -> AnyPublisher<[MatchWithOdds], Error> {
+        if reset {
+            networkService.reset()
+            storageQueue.async { [storage] in storage.clear() }
+        }
 
-                let oddsPublisher: AnyPublisher<[MatchOdds], Error> = networkService.get(path: "/odds")
-                return oddsPublisher
-                    .retry(5)
-                    .map { freshOdds in
-                        let oddsMap = self.oddsMapByMatchID(from: freshOdds)
-                        return self.refresh(matches: validMatches.map(\.match), with: oddsMap)
-                    }
-                    .eraseToAnyPublisher()
-            }
-            .eraseToAnyPublisher()
+        return fetchFromNetwork()
     }
 
     private func fetchFromNetwork() -> AnyPublisher<[MatchWithOdds], Error> {
