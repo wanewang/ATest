@@ -20,12 +20,47 @@ final class MatchTableViewCell: UITableViewCell {
         fatalError("init(coder:) has not been implemented")
     }
 
+    private var previousOdds: MatchOdds?
+
     func configure(with data: MatchWithOdds) {
+        let shouldBlink = previousOdds != nil
+            && (previousOdds?.teamAOdds != data.odds.teamAOdds
+                || previousOdds?.teamBOdds != data.odds.teamBOdds)
+
         teamANameLabel.text = data.match.teamA
         teamBNameLabel.text = data.match.teamB
         teamAOddsLabel.text = String(format: "%.2f", data.odds.teamAOdds)
         teamBOddsLabel.text = String(format: "%.2f", data.odds.teamBOdds)
         startTimeLabel.text = DateFormatterProvider.matchTime.string(from: data.match.startTime)
+
+        if shouldBlink {
+            blinkOddsLabels()
+        }
+
+        previousOdds = data.odds
+    }
+
+    private func blinkOddsLabels() {
+        let blinkTextColor = UIColor.black
+
+        let originalAColor = teamAOddsLabel.textColor
+        let originalBColor = teamBOddsLabel.textColor
+
+        // Flash on
+        UIView.animate(withDuration: 0.15) {
+            self.teamAOddsLabel.textColor = blinkTextColor
+            self.teamBOddsLabel.textColor = blinkTextColor
+            self.teamAOddsLabel.transform = CGAffineTransform(scaleX: 1.1, y: 1.1)
+            self.teamBOddsLabel.transform = CGAffineTransform(scaleX: 1.1, y: 1.1)
+        } completion: { _ in
+            // Hold briefly, then fade out
+            UIView.animate(withDuration: 0.6, delay: 0.4, options: .curveEaseOut) {
+                self.teamAOddsLabel.textColor = originalAColor
+                self.teamBOddsLabel.textColor = originalBColor
+                self.teamAOddsLabel.transform = .identity
+                self.teamBOddsLabel.transform = .identity
+            }
+        }
     }
 
     // MARK: - Layout

@@ -33,6 +33,11 @@ final class MatchListViewModel: ObservableObject {
 
     init(dataProvider: MatchDataProviding) {
         self.dataProvider = dataProvider
+        subscribeToOddsStream()
+    }
+
+    deinit {
+        dataProvider.disconnectOddsStream()
     }
 
     // MARK: - Pagination
@@ -47,19 +52,31 @@ final class MatchListViewModel: ObservableObject {
         }
     }
 
-    // MARK: - Real-time odds update hook
+    // MARK: - Real-time odds
 
-    func updateOdds(for matchID: Int, teamAOdds: Double, teamBOdds: Double) {
-        guard let existing = matchDataMap[matchID] else { return }
-        let newOdds = MatchOdds(matchID: matchID, teamAOdds: teamAOdds, teamBOdds: teamBOdds)
-        let updated = MatchWithOdds(match: existing.match, odds: newOdds)
-        matchDataMap[matchID] = updated
+    private func subscribeToOddsStream() {
+        dataProvider.oddsStream
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] oddsBatch in
+                self?.applyOddsUpdates(oddsBatch)
+            }
+            .store(in: &cancellables)
+    }
 
-        if let index = allMatches.firstIndex(where: { $0.match.matchID == matchID }) {
-            allMatches[index] = updated
+    private func applyOddsUpdates(_ batch: [MatchOdds]) {
+        var changedIDs: [Int] = []
+        for newOdds in batch {
+            guard let existing = matchDataMap[newOdds.matchID] else { continue }
+            let updated = MatchWithOdds(match: existing.match, odds: newOdds)
+            matchDataMap[newOdds.matchID] = updated
+            if let index = allMatches.firstIndex(where: { $0.match.matchID == newOdds.matchID }) {
+                allMatches[index] = updated
+            }
+            changedIDs.append(newOdds.matchID)
         }
-
-        oddsUpdated.send([matchID])
+        if !changedIDs.isEmpty {
+            oddsUpdated.send(changedIDs)
+        }
     }
 
     func match(for id: Int) -> MatchWithOdds? {
@@ -99,6 +116,7 @@ final class MatchListViewModel: ObservableObject {
                     }
                     self.appendNextPage()
                     self.loadState = .loaded
+                    self.dataProvider.connectOddsStream(matchIDs: self.allMatches.map(\.match.matchID))
                 }
             )
             .store(in: &cancellables)

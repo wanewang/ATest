@@ -2,7 +2,10 @@ import Foundation
 import Combine
 
 protocol MatchDataProviding {
+    var oddsStream: AnyPublisher<[MatchOdds], Never> { get }
     func fetchMatchesWithOdds(reset: Bool) -> AnyPublisher<[MatchWithOdds], Error>
+    func connectOddsStream(matchIDs: [Int])
+    func disconnectOddsStream()
 }
 
 extension MatchDataProviding {
@@ -13,10 +16,28 @@ extension MatchDataProviding {
 
 final class MatchDataProvider: MatchDataProviding {
 
-    private let networkService: NetworkService
+    var oddsStream: AnyPublisher<[MatchOdds], Never> {
+        webSocketProvider.oddsStream
+    }
 
-    init(networkService: NetworkService) {
+    private let networkService: NetworkService
+    private let webSocketProvider: WebSocketProviding
+
+    init(networkService: NetworkService, webSocketProvider: WebSocketProviding) {
         self.networkService = networkService
+        self.webSocketProvider = webSocketProvider
+    }
+
+    deinit {
+        print("cache here?")
+    }
+
+    func connectOddsStream(matchIDs: [Int]) {
+        webSocketProvider.connect(matchIDs: matchIDs)
+    }
+
+    func disconnectOddsStream() {
+        webSocketProvider.disconnect()
     }
 
     func fetchMatchesWithOdds(reset: Bool) -> AnyPublisher<[MatchWithOdds], Error> {

@@ -10,7 +10,10 @@ import SwiftUI
 struct ContentView: View {
 
     @StateObject private var viewModel = MatchListViewModel(
-        dataProvider: MatchDataProvider(networkService: MockNetworkService())
+        dataProvider: MatchDataProvider(
+            networkService: MockNetworkService(),
+            webSocketProvider: MockWebSocketProvider()
+        )
     )
 
     var body: some View {
