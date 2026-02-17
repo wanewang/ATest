@@ -71,15 +71,15 @@ final class MatchListViewModel: ObservableObject {
     func retry() {
         allMatches = []
         hasMorePages = true
-        fetchAll()
+        fetchAll(reset: true)
     }
 
-    private func fetchAll() {
+    private func fetchAll(reset: Bool = false) {
         Task { @MainActor in
             loadState = .loading
         }
 
-        dataProvider.fetchMatchesWithOdds()
+        dataProvider.fetchMatchesWithOdds(reset: reset)
             .receive(on: DispatchQueue.main)
             .sink(
                 receiveCompletion: { [weak self] completion in

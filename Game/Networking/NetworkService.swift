@@ -17,4 +17,5 @@ enum NetworkError: Error, LocalizedError {
 
 protocol NetworkService {
     func get<T: Decodable>(path: String) -> AnyPublisher<T, Error>
+    func reset()
 }

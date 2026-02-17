@@ -35,12 +35,20 @@ struct MatchListTableView: UIViewRepresentable {
             super.init()
         }
 
+        @objc private func handleRefresh(_ control: UIRefreshControl) {
+            viewModel.retry()
+        }
+
         func setUp(_ tableView: UITableView) {
             tableView.delegate = self
             tableView.register(
                 MatchTableViewCell.self,
                 forCellReuseIdentifier: MatchTableViewCell.reuseIdentifier
             )
+
+            let refreshControl = UIRefreshControl()
+            refreshControl.addTarget(self, action: #selector(handleRefresh), for: .valueChanged)
+            tableView.refreshControl = refreshControl
 
             let source = UITableViewDiffableDataSource<Int, Int>(
                 tableView: tableView
@@ -69,6 +77,15 @@ struct MatchListTableView: UIViewRepresentable {
                 .receive(on: DispatchQueue.main)
                 .sink { [weak self] matchIDs in
                     self?.reconfigureItems(matchIDs)
+                }
+                .store(in: &cancellables)
+
+            viewModel.$loadState
+                .receive(on: DispatchQueue.main)
+                .sink { _ in
+                    if tableView.refreshControl?.isRefreshing == true {
+                        tableView.refreshControl?.endRefreshing()
+                    }
                 }
                 .store(in: &cancellables)
 

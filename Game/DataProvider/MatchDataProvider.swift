@@ -2,7 +2,13 @@ import Foundation
 import Combine
 
 protocol MatchDataProviding {
-    func fetchMatchesWithOdds() -> AnyPublisher<[MatchWithOdds], Error>
+    func fetchMatchesWithOdds(reset: Bool) -> AnyPublisher<[MatchWithOdds], Error>
+}
+
+extension MatchDataProviding {
+    func fetchMatchesWithOdds() -> AnyPublisher<[MatchWithOdds], Error> {
+        fetchMatchesWithOdds(reset: false)
+    }
 }
 
 final class MatchDataProvider: MatchDataProviding {
@@ -13,7 +19,11 @@ final class MatchDataProvider: MatchDataProviding {
         self.networkService = networkService
     }
 
-    func fetchMatchesWithOdds() -> AnyPublisher<[MatchWithOdds], Error> {
+    func fetchMatchesWithOdds(reset: Bool) -> AnyPublisher<[MatchWithOdds], Error> {
+        if reset {
+            networkService.reset()
+        }
+
         let matchesPublisher: AnyPublisher<[Match], Error> = networkService.get(path: "/matches")
         let oddsPublisher: AnyPublisher<[MatchOdds], Error> = networkService.get(path: "/odds")
 

@@ -3,10 +3,16 @@ import Combine
 
 final class MockNetworkService: NetworkService {
 
-    private let matches: [Match]
-    private let odds: [MatchOdds]
+    private var matches: [Match]
+    private var odds: [MatchOdds]
 
     init() {
+        let generated = Self.generateMockData()
+        self.matches = generated.matches
+        self.odds = generated.odds
+    }
+
+    func reset() {
         let generated = Self.generateMockData()
         self.matches = generated.matches
         self.odds = generated.odds
